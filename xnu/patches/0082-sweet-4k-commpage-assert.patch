@@ -1,0 +1,14 @@
+diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
+index 8e5f8f0..7f2a1b3 100644
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -10985,7 +10985,9 @@ pmap_insert_shared_page(
+  * Ensure that 64-bit devices using 4K pages can nest the commpage completely
+  * above the maximum userspace VA.
+  */
++#if !defined(SWEET)
+ static_assert((_COMM_PAGE64_BASE_ADDRESS & ~ARM_TT_L1_OFFMASK) >= MACH_VM_MAX_ADDRESS);
++#endif
+ #else
+ #error Nested shared page mapping is unsupported on this config
+ #endif
