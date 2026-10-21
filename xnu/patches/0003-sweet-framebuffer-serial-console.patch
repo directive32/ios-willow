@@ -126,8 +126,7 @@ index 997a4ab..db26bbe 100644
 +	uint32_t const *val;
 +	unsigned int size;
 +
-+	if ((SecureDTFindEntry("name", "sweet-fbcon", &entry) != kSuccess &&
-+	     SecureDTFindEntry("name", "willow-fbcon", &entry) != kSuccess) ||
++	if (SecureDTFindEntry("name", "sweet-fbcon", &entry) != kSuccess ||
 +	    SecureDTGetProperty(entry, "reg", (void const **)&reg, &size) != kSuccess || size < 16) {
 +		return;
 +	}
