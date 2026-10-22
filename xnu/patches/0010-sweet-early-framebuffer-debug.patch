@@ -87,10 +87,10 @@ index d89b0f1..d0c710d 100644
  
  	flush_mmu_tlb();
 diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
-index 4524ceb..9f41dcb 100644
+index ccbb188..777aca4 100644
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
-@@ -513,6 +513,25 @@ LEXT(start_first_cpu)
+@@ -463,6 +463,25 @@ LEXT(start_first_cpu)
  	mov		x20, x0
  	mov		x21, #0
  
@@ -113,36 +113,21 @@ index 4524ceb..9f41dcb 100644
 +	dsb		sy
 +#endif
 +
- 
  	// Set low reset vector before attempting any loads
  	adrp	x0, EXT(LowExceptionVectorBase)@page
-@@ -576,7 +595,11 @@ LEXT(start_first_cpu)
- 	mov		x0, #(ARM_TTE_EMPTY)				// Load invalid entry template
- 	mov		x1, x25								// Start at V=P pagetable root
- 	mov		x2, #(TTE_PGENTRIES)				// Load number of entries per page
-+#if defined(SWEET)
-+	lsl		x2, x2, #5							// Shift by 5 for 32 pages (covers all 4KB bootstrap tables)
-+#else
- 	lsl		x2, x2, #2							// Shift by 2 for num entries on 4 pages
-+#endif
- 
- Linvalidate_bootstrap:							// do {
- 	str		x0, [x1], #(1 << TTE_SHIFT)			//   Invalidate and advance
-@@ -660,6 +683,32 @@ Lkernelcache_base_found:
+ 	add		x0, x0, EXT(LowExceptionVectorBase)@pageoff
+@@ -609,6 +628,157 @@ Lkernelcache_base_found:
  	lsr		x5,  x24, #(ARM_TT_L2_SHIFT)
  	create_bootstrap_mapping x14, x15, x5, x3, x2, x9, x10, x11, x12, x13
  
 +#if defined(SWEET)
-+	/*
-+	 * Willow (4KB pages): Framebuffer 0x5c000000 is in 1GB L1 block 1 (0x40000000..0x7fffffff).
-+	 * Map 0x40000000 as a 1GB Normal-NC block in TTBR0 L1 table (x25).
-+	 * Do NOT write to x3 (TTBR1), which maps upper kernel memory!
-+	 */
++	/* Willow 4KB pages: framebuffer 0x5c000000 is in 1GB block 1 (0x40000000..0x7fffffff) */
 +	MOV64	x10, 0x40000000
 +	MOV64	x11, (ARM_TTE_TYPE_BLOCK | ARM_TTE_VALID | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) | ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX)
 +	orr		x11, x11, x10
 +	str		x11, [x25, #(1 * 8)]
-+	/* Stage 0.5: Green 64x32 box at x=80..144 indicating bootstrap tables mapped */
++
++	/* Stage 0.5: Green 64x32 box at x=80..144 */
 +	MOV64	x0, (0x5c000000 + 2300 * 4320 + 80 * 4)
 +	mov		w1, #0xff00
 +	mov		x2, #32
@@ -157,15 +142,69 @@ index 4524ceb..9f41dcb 100644
 +	add		x0, x0, x4
 +	subs	x2, x2, #1
 +	b.ne	Lwillow_green_row
-+#endif
- 
- 	/* Ensure TTEs are visible */
- 	dsb		ish
-@@ -798,11 +847,50 @@ common_start:
- 	PAC_INIT_KEY_STATE tmp=x0, tmp2=x1
- #endif /* HAS_APPLE_PAC */
- 
-+#if defined(SWEET)
++
++	/* Zero out remaining bootstrap page table pages up to 128KB (32 pages) */
++	mov		x0, #(ARM_TTE_EMPTY)
++	mov		x1, x2
++	MOV64	x6, 0x20000
++	add		x6, x25, x6
++Lwillow_zero_loop:
++	cmp		x1, x6
++	b.hs	Lwillow_zero_done
++	str		x0, [x1], #8
++	b		Lwillow_zero_loop
++Lwillow_zero_done:
++
++	dsb		ish
++	b		Lwillow_common_start
++
++Lwillow_common_start:
++	adrp	x0,     EXT(sysreg_restore)@page
++	add		x0, x0, EXT(sysreg_restore)@pageoff
++	ldr		x1, [x0, SR_RESTORE_TCR_EL1]
++	MSR_TCR_EL1_X1
++
++	and		x0, x25, #(TTBR_BADDR_MASK)
++	mov		x19, lr
++	bl		EXT(set_mmu_ttb)
++	mov		lr, x19
++	add		x0, x25, PGBYTES
++	and		x0, x0, #(TTBR_BADDR_MASK)
++	MSR_TTBR1_EL1_X0
++
++	mov		x0, xzr
++	mov		x1, #(MAIR_WRITEBACK << MAIR_ATTR_SHIFT(CACHE_ATTRINDX_WRITEBACK))
++	orr		x0, x0, x1
++	mov		x1, #(MAIR_INNERWRITEBACK << MAIR_ATTR_SHIFT(CACHE_ATTRINDX_INNERWRITEBACK))
++	orr		x0, x0, x1
++	mov		x1, #(MAIR_DISABLE << MAIR_ATTR_SHIFT(CACHE_ATTRINDX_DISABLE))
++	orr		x0, x0, x1
++	mov		x1, #(MAIR_WRITETHRU << MAIR_ATTR_SHIFT(CACHE_ATTRINDX_WRITETHRU))
++	orr		x0, x0, x1
++	mov		x1, #(MAIR_WRITECOMB << MAIR_ATTR_SHIFT(CACHE_ATTRINDX_WRITECOMB))
++	orr		x0, x0, x1
++	mov		x1, #(MAIR_POSTED << MAIR_ATTR_SHIFT(CACHE_ATTRINDX_POSTED))
++	orr		x0, x0, x1
++	mov		x1, #(MAIR_POSTED_REORDERED << MAIR_ATTR_SHIFT(CACHE_ATTRINDX_POSTED_REORDERED))
++	orr		x0, x0, x1
++	mov		x1, #(MAIR_POSTED_COMBINED_REORDERED << MAIR_ATTR_SHIFT(CACHE_ATTRINDX_POSTED_COMBINED_REORDERED))
++	orr		x0, x0, x1
++	msr		MAIR_EL1, x0
++	isb
++
++	tlbi	vmalle1
++	dsb		ish
++	tlbi	vmalle1
++	ic		iallu
++	dsb		sy
++	isb
++
++	adrp	x0, EXT(ExceptionVectorsBase)@page
++	add		x0, x0, EXT(ExceptionVectorsBase)@pageoff
++	add		x0, x0, x22
++	sub		x0, x0, x23
++	MSR_VBAR_EL1_X0
++
 +	/* Stage 0.6: Yellow 64x32 box at x=160..224 right before enabling MMU */
 +	MOV64	x0, (0x5c000000 + 2300 * 4320 + 160 * 4)
 +	mov		w1, #0xffff
@@ -183,15 +222,12 @@ index 4524ceb..9f41dcb 100644
 +	subs	x2, x2, #1
 +	b.ne	Lwillow_yellow_row
 +	dsb		sy
-+#endif
 +
- 	// Enable caches, MMU, ROP and JOP
- 	MOV64   x0, SCTLR_EL1_DEFAULT
- 	MSR_SCTLR_EL1_X0
- 	isb		sy
- 
-+#if defined(SWEET)
-+	/* Stage 0.7: Cyan 64x32 box at x=240..304 immediately after MMU is enabled */
++	MOV64   x0, SCTLR_EL1_DEFAULT
++	MSR_SCTLR_EL1_X0
++	isb		sy
++
++	/* Stage 0.7: Cyan 64x32 box at x=240..304 immediately after MMU enabled */
 +	MOV64	x0, (0x5c000000 + 2300 * 4320 + 240 * 4)
 +	mov		w1, #0xffff
 +	mov		x2, #32
@@ -207,16 +243,12 @@ index 4524ceb..9f41dcb 100644
 +	subs	x2, x2, #1
 +	b.ne	Lwillow_cyan_row
 +	dsb		sy
-+#endif
 +
- #if !VMAPPLE && !defined(SWEET)
- 	MOV64   x1, SCTLR_EL1_DEFAULT
- 	cmp		x0, x1
-@@ -865,6 +953,30 @@ common_start:
- 	mov	lr, x21
- #endif
- 
-+#if defined(SWEET)
++	mov		x0, #(CPACR_FPEN_ENABLE)
++	msr		CPACR_EL1, x0
++	msr		TPIDR_EL1, xzr
++	mrs		x12, MIDR_EL1
++
 +	/* Stage 0.8: Magenta 64x32 box at x=320..384 right before ret to arm_init */
 +	MOV64	x0, (0x5c000000 + 2300 * 4320 + 320 * 4)
 +	mov		w1, #0x00ff
@@ -235,13 +267,12 @@ index 4524ceb..9f41dcb 100644
 +	b.ne	Lwillow_magenta_row
 +	dsb		sy
 +
-+	// Restore x0 = KVA of boot args for arm_init
 +	add		x0, x20, x22
 +	sub		x0, x0, x23
++	ret
 +#endif
-+
- 	// Return to arm_init()
- 	ret
+ 	/* Ensure TTEs are visible */
+ 	dsb		ish
  
 diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
 new file mode 100644
