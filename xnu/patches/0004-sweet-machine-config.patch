@@ -15,7 +15,7 @@ index 8460893..9a748ea 100644
  MACHINE_FLAGS_ARM64_T6000 = -DARM64_BOARD_CONFIG_T6000 		-mcpu=apple-a14
  MACHINE_FLAGS_ARM64_VMAPPLE = -DARM64_BOARD_CONFIG_VMAPPLE              -march=armv8.5a
  MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837
-+MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -march=armv8-a+crypto
++MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -mcpu=cortex-a73+crypto -mno-outline-atomics
  
  
  #
@@ -31,7 +31,7 @@ index 8460893..9a748ea 100644
  
  endif
  
-@@ -330,6 +334,12 @@ ifneq ($(filter $(PLATFORM),MacOSX),)
+@@ -330,6 +334,13 @@ ifneq ($(filter $(PLATFORM),MacOSX),)
  LARGE_MEMORY_DEFINE=-DARM_LARGE_MEMORY=1
  ARM64_PLKSEG_ADDR  =0xfffffe0004004000
  ARM64_LINK_ADDR    =0xfffffe0007004000
@@ -41,6 +41,7 @@ index 8460893..9a748ea 100644
 +LARGE_MEMORY_DEFINE=-UARM_LARGE_MEMORY
 +ARM64_PLKSEG_ADDR  =0xfffffff004004000
 +ARM64_LINK_ADDR    =0xfffffff007004000
++CFLAGS_ARM64      += -mcpu=cortex-a73+crypto -mno-outline-atomics
 +endif
  
  
