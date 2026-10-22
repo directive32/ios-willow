@@ -1,6 +1,9 @@
 name: build-rootfs
 
 on:
+  push:
+    branches:
+      - rootfs-build
   workflow_dispatch:
 
 jobs:
