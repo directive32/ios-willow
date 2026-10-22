@@ -1,7 +1,8 @@
 diff --git a/osfmk/kern/zalloc.c b/osfmk/kern/zalloc.c
+index 182b44a..2f2d6e2 100644
 --- a/osfmk/kern/zalloc.c
 +++ b/osfmk/kern/zalloc.c
-@@ -164,6 +164,9 @@
+@@ -163,6 +163,9 @@ ZONE_DEFINE_TYPE(percpu_u64_zone, "percpu.64", uint64_t,
  #if XNU_PLATFORM_MacOSX
  #define ZONE_MAP_MAX            (32ULL << 30)
  #define ZONE_MAP_VA_SIZE        (128ULL << 30)
@@ -12,9 +13,10 @@ diff --git a/osfmk/kern/zalloc.c b/osfmk/kern/zalloc.c
  #define ZONE_MAP_MAX            (8ULL << 30)
  #define ZONE_MAP_VA_SIZE        (24ULL << 30)
 diff --git a/osfmk/vm/vm_kern.c b/osfmk/vm/vm_kern.c
+index 54edb01..db1a422 100644
 --- a/osfmk/vm/vm_kern.c
 +++ b/osfmk/vm/vm_kern.c
-@@ -3509,6 +3509,11 @@
+@@ -3558,6 +3558,11 @@ kmem_add_extra_claims(void)
  
  	ptr_range_size = round_page(ptr_range_size);
  	sprayqtn_range_size = round_page(sprayqtn_range_size);
@@ -24,9 +26,9 @@ diff --git a/osfmk/vm/vm_kern.c b/osfmk/vm/vm_kern.c
 +	}
 +#endif
  
+ 
  	data_range_size = largest_free_size
- 	    - (ptr_range_size * kmem_ptr_ranges)
-@@ -3518,6 +3523,11 @@
+@@ -3568,6 +3573,11 @@ kmem_add_extra_claims(void)
  	 * Add claims for kmem's ranges
  	 */
  	data_range_size += kmem_add_ptr_claims();
