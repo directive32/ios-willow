@@ -1,40 +1,18 @@
 diff --git a/bsd/conf/files b/bsd/conf/files
+index 6630131..3b986d9 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -105,6 +105,7 @@
+@@ -105,6 +105,7 @@ bsd/dev/random/randomdev.c		standard
  
  bsd/dev/memdev.c			standard
  bsd/dev/sweet_ufs.c			standard
 +bsd/dev/willow_sdhci.c			standard
- bsd/dev/mem.c				standard
- bsd/dev/munge.c 			optional config_requires_u32_munging
- bsd/dev/unix_startup.c			standard
-diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
---- a/iokit/bsddev/IOKitBSDInit.cpp
-+++ b/iokit/bsddev/IOKitBSDInit.cpp
-@@ -770,12 +770,17 @@
- //
- //	SWEET: root on a GPT partition of the internal UFS (bsd/dev/sweet_ufs.c)
- //
--	if (strcmp(rdBootVar, "ufsroot0") == 0) {
-+	if (strcmp(rdBootVar, "sdhci0") == 0 || strcmp(rdBootVar, "ufsroot0") == 0) {
-+		extern int willow_sdhci_rootdev(dev_t *dev);
- 		extern int sweet_ufs_rootdev(dev_t *dev);
- 		OSSafeReleaseNULL(matching);
--		int ufs_error = sweet_ufs_rootdev(root);
--		if (ufs_error) {
--			panic("IOFindBSDRoot: SWEET UFS root %s unavailable: %d", rdBootVar, ufs_error);
-+		int disk_error = willow_sdhci_rootdev(root);
-+		if (disk_error) {
-+			disk_error = sweet_ufs_rootdev(root);
-+		}
-+		if (disk_error) {
-+			panic("IOFindBSDRoot: root %s unavailable: %d", rdBootVar, disk_error);
- 		}
- 		strlcpy(rootName, rdBootVar, rootNameSize);
- 		IOLog("BSD root: %s, major %d, minor %d\n", rootName, major(*root), minor(*root));
+ bsd/dev/sweet_sample.c			standard
+ bsd/dev/sweet_keys.c			standard
+ bsd/dev/sweet_touch.c			standard
 diff --git a/bsd/dev/willow_sdhci.c b/bsd/dev/willow_sdhci.c
 new file mode 100644
+index 0000000..c0ead11
 --- /dev/null
 +++ b/bsd/dev/willow_sdhci.c
 @@ -0,0 +1,559 @@
@@ -597,3 +575,28 @@ new file mode 100644
 +	return 0;
 +}
 +#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
+index e6c74aa..ce1e4ac 100644
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -770,12 +770,16 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ //
+ //	SWEET: root on a GPT partition of the internal UFS (bsd/dev/sweet_ufs.c)
+ //
+-	if (strcmp(rdBootVar, "ufsroot0") == 0) {
++	if (strcmp(rdBootVar, "sdhci0") == 0 || strcmp(rdBootVar, "ufsroot0") == 0) {
++		extern int willow_sdhci_rootdev(dev_t *dev);
+ 		extern int sweet_ufs_rootdev(dev_t *dev);
+ 		OSSafeReleaseNULL(matching);
+-		int ufs_error = sweet_ufs_rootdev(root);
+-		if (ufs_error) {
+-			panic("IOFindBSDRoot: SWEET UFS root %s unavailable: %d", rdBootVar, ufs_error);
++		int disk_error = willow_sdhci_rootdev(root);
++		if (disk_error) {
++			disk_error = sweet_ufs_rootdev(root);
++		}
++		if (disk_error) {
++			panic("IOFindBSDRoot: root %s unavailable: %d", rdBootVar, disk_error);
+ 		}
+ 		strlcpy(rootName, rdBootVar, rootNameSize);
+ 		IOLog("BSD root: %s, major %d, minor %d\n", rootName, major(*root), minor(*root));
