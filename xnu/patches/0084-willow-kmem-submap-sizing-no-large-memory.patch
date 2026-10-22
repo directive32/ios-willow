@@ -1,26 +1,28 @@
 diff --git a/osfmk/kern/zalloc.c b/osfmk/kern/zalloc.c
-index 182b44a..2f2d6e2 100644
+index 182b44a..065106d 100644
 --- a/osfmk/kern/zalloc.c
 +++ b/osfmk/kern/zalloc.c
-@@ -163,6 +163,9 @@ ZONE_DEFINE_TYPE(percpu_u64_zone, "percpu.64", uint64_t,
- #if XNU_PLATFORM_MacOSX
- #define ZONE_MAP_MAX            (32ULL << 30)
- #define ZONE_MAP_VA_SIZE        (128ULL << 30)
-+#elif !defined(ARM_LARGE_MEMORY)
+@@ -160,7 +160,10 @@ ZONE_DEFINE_TYPE(percpu_u64_zone, "percpu.64", uint64_t,
+ #define ZONE_GUARD_SPARSE       (64  * 1024)
+ #endif /* ZSECURITY_CONFIG(SAD_FENG_SHUI) */
+ 
+-#if XNU_PLATFORM_MacOSX
++#if defined(SWEET) || !defined(ARM_LARGE_MEMORY)
 +#define ZONE_MAP_MAX            (2ULL << 30)
 +#define ZONE_MAP_VA_SIZE        (4ULL << 30)
++#elif XNU_PLATFORM_MacOSX
+ #define ZONE_MAP_MAX            (32ULL << 30)
+ #define ZONE_MAP_VA_SIZE        (128ULL << 30)
  #else /* XNU_PLATFORM_MacOSX */
- #define ZONE_MAP_MAX            (8ULL << 30)
- #define ZONE_MAP_VA_SIZE        (24ULL << 30)
 diff --git a/osfmk/vm/vm_kern.c b/osfmk/vm/vm_kern.c
-index 54edb01..db1a422 100644
+index 54edb01..9dd150f 100644
 --- a/osfmk/vm/vm_kern.c
 +++ b/osfmk/vm/vm_kern.c
 @@ -3558,6 +3558,11 @@ kmem_add_extra_claims(void)
  
  	ptr_range_size = round_page(ptr_range_size);
  	sprayqtn_range_size = round_page(sprayqtn_range_size);
-+#if !defined(ARM_LARGE_MEMORY)
++#if defined(SWEET) || !defined(ARM_LARGE_MEMORY)
 +	if (ptr_range_size > (4ULL << 30)) {
 +		ptr_range_size = (4ULL << 30);
 +	}
@@ -32,7 +34,7 @@ index 54edb01..db1a422 100644
  	 * Add claims for kmem's ranges
  	 */
  	data_range_size += kmem_add_ptr_claims();
-+#if !defined(ARM_LARGE_MEMORY)
++#if defined(SWEET) || !defined(ARM_LARGE_MEMORY)
 +	if (data_range_size > (8ULL << 30)) {
 +		data_range_size = (8ULL << 30);
 +	}
