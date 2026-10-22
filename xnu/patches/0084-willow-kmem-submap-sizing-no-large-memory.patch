@@ -1,0 +1,40 @@
+diff --git a/osfmk/kern/zalloc.c b/osfmk/kern/zalloc.c
+--- a/osfmk/kern/zalloc.c
++++ b/osfmk/kern/zalloc.c
+@@ -164,6 +164,9 @@
+ #if XNU_PLATFORM_MacOSX
+ #define ZONE_MAP_MAX            (32ULL << 30)
+ #define ZONE_MAP_VA_SIZE        (128ULL << 30)
++#elif !defined(ARM_LARGE_MEMORY)
++#define ZONE_MAP_MAX            (2ULL << 30)
++#define ZONE_MAP_VA_SIZE        (4ULL << 30)
+ #else /* XNU_PLATFORM_MacOSX */
+ #define ZONE_MAP_MAX            (8ULL << 30)
+ #define ZONE_MAP_VA_SIZE        (24ULL << 30)
+diff --git a/osfmk/vm/vm_kern.c b/osfmk/vm/vm_kern.c
+--- a/osfmk/vm/vm_kern.c
++++ b/osfmk/vm/vm_kern.c
+@@ -3509,6 +3509,11 @@
+ 
+ 	ptr_range_size = round_page(ptr_range_size);
+ 	sprayqtn_range_size = round_page(sprayqtn_range_size);
++#if !defined(ARM_LARGE_MEMORY)
++	if (ptr_range_size > (4ULL << 30)) {
++		ptr_range_size = (4ULL << 30);
++	}
++#endif
+ 
+ 	data_range_size = largest_free_size
+ 	    - (ptr_range_size * kmem_ptr_ranges)
+@@ -3518,6 +3523,11 @@
+ 	 * Add claims for kmem's ranges
+ 	 */
+ 	data_range_size += kmem_add_ptr_claims();
++#if !defined(ARM_LARGE_MEMORY)
++	if (data_range_size > (8ULL << 30)) {
++		data_range_size = (8ULL << 30);
++	}
++#endif
+ 	assert(data_range_size + sprayqtn_range_size +
+ 	    ((ptr_range_size + kmem_meta_size) * kmem_ptr_ranges) <=
+ 	    largest_free_size);
