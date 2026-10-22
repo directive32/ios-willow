@@ -1,0 +1,61 @@
+name: build-rootfs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          df -h
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apfs-fuse hfsprogs android-sdk-libsparse-utils zstd rsync curl unzip
+
+      - name: Download and unpack IPSW DMGs
+        run: |
+          IPSW_URL="https://updates.cdn-apple.com/2025FallFCS/fullrestores/122-77006/1158E502-D76D-4226-AA06-ED5E30CD1111/iPhone10,3,iPhone10,6_16.7.16_20H392_Restore.ipsw"
+          echo "Downloading IPSW from Apple CDN..."
+          curl -L -o ipsw.zip "$IPSW_URL"
+          echo "Extracting DMGs..."
+          unzip -q ipsw.zip "087-86698-044.dmg" "087-86593-047.dmg" "087-86715-047.dmg"
+          rm -f ipsw.zip
+          ls -lh *.dmg
+
+      - name: Build HFS+ iOS Root Image
+        run: |
+          chmod +x tools/mkiosroot.sh
+          bash tools/mkiosroot.sh 087-86698-044.dmg 087-86593-047.dmg 087-86715-047.dmg ios16-root.img 16G
+          rm -f *.dmg
+          ls -lh ios16-root.img
+
+      - name: Apply Bring-Up Tweaks
+        run: |
+          mkdir -p /mnt/iosroot
+          sudo mount -t hfsplus -o loop,force ios16-root.img /mnt/iosroot
+          sudo python3 tools/sweet-root-tweaks.py /mnt/iosroot
+          sudo umount /mnt/iosroot
+          sudo fsck.hfsplus -fy ios16-root.img || true
+
+      - name: Convert to Sparse Image
+        run: |
+          img2simg ios16-root.img ios16-root.simg
+          rm -f ios16-root.img
+          ls -lh ios16-root.simg
+          zstd -T0 -3 ios16-root.simg -o ios16-root.simg.zst
+          ls -lh ios16-root.simg.zst
+
+      - name: Upload RootFS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios16-root-sparse
+          path: ios16-root.simg.zst
+          retention-days: 7
