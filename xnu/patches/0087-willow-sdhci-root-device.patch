@@ -12,10 +12,10 @@ index 6630131..3b986d9 100644
  bsd/dev/sweet_touch.c			standard
 diff --git a/bsd/dev/willow_sdhci.c b/bsd/dev/willow_sdhci.c
 new file mode 100644
-index 0000000..c0ead11
+index 0000000..1e82b31
 --- /dev/null
 +++ b/bsd/dev/willow_sdhci.c
-@@ -0,0 +1,559 @@
+@@ -0,0 +1,567 @@
 +/*
 + * WILLOW internal eMMC SDHCI root device.
 + *
@@ -109,12 +109,20 @@ index 0000000..c0ead11
 +	*(volatile uint32_t *)(ws.regs + reg) = val;
 +}
 +
++static inline uint64_t
++sdhci_deadline(void)
++{
++	uint64_t abstime;
++	nanoseconds_to_absolutetime(CMD_TIMEOUT_NS, &abstime);
++	return mach_absolute_time() + abstime;
++}
++
 +static int
 +sdhci_wait_cmd_ready(void)
 +{
-+	uint64_t deadline = clock_get_uptime_nanoseconds() + CMD_TIMEOUT_NS;
++	uint64_t deadline = sdhci_deadline();
 +	while (sdhci_r32(SDHCI_PRESENT_STATE) & 1) {
-+		if (clock_get_uptime_nanoseconds() > deadline) {
++		if (mach_absolute_time() > deadline) {
 +			return ETIMEDOUT;
 +		}
 +	}
@@ -124,9 +132,9 @@ index 0000000..c0ead11
 +static int
 +sdhci_wait_data_ready(void)
 +{
-+	uint64_t deadline = clock_get_uptime_nanoseconds() + CMD_TIMEOUT_NS;
++	uint64_t deadline = sdhci_deadline();
 +	while (sdhci_r32(SDHCI_PRESENT_STATE) & 2) {
-+		if (clock_get_uptime_nanoseconds() > deadline) {
++		if (mach_absolute_time() > deadline) {
 +			return ETIMEDOUT;
 +		}
 +	}
@@ -151,24 +159,24 @@ index 0000000..c0ead11
 +	sdhci_w16(SDHCI_COMMAND, (17 << 8) | 0x3a); /* CMD17 */
 +
 +	/* Wait for Command Complete (bit 0) */
-+	uint64_t deadline = clock_get_uptime_nanoseconds() + CMD_TIMEOUT_NS;
++	uint64_t deadline = sdhci_deadline();
 +	while (!(sdhci_r16(SDHCI_INT_STATUS) & 1)) {
 +		if (sdhci_r16(SDHCI_ERR_INT_STATUS)) {
 +			return EIO;
 +		}
-+		if (clock_get_uptime_nanoseconds() > deadline) {
++		if (mach_absolute_time() > deadline) {
 +			return ETIMEDOUT;
 +		}
 +	}
 +	sdhci_w16(SDHCI_INT_STATUS, 1);
 +
 +	/* Wait for Buffer Read Ready (bit 5) */
-+	deadline = clock_get_uptime_nanoseconds() + CMD_TIMEOUT_NS;
++	deadline = sdhci_deadline();
 +	while (!(sdhci_r16(SDHCI_INT_STATUS) & 0x20)) {
 +		if (sdhci_r16(SDHCI_ERR_INT_STATUS)) {
 +			return EIO;
 +		}
-+		if (clock_get_uptime_nanoseconds() > deadline) {
++		if (mach_absolute_time() > deadline) {
 +			return ETIMEDOUT;
 +		}
 +	}
@@ -181,12 +189,12 @@ index 0000000..c0ead11
 +	}
 +
 +	/* Wait for Transfer Complete (bit 1) */
-+	deadline = clock_get_uptime_nanoseconds() + CMD_TIMEOUT_NS;
++	deadline = sdhci_deadline();
 +	while (!(sdhci_r16(SDHCI_INT_STATUS) & 2)) {
 +		if (sdhci_r16(SDHCI_ERR_INT_STATUS)) {
 +			return EIO;
 +		}
-+		if (clock_get_uptime_nanoseconds() > deadline) {
++		if (mach_absolute_time() > deadline) {
 +			return ETIMEDOUT;
 +		}
 +	}
@@ -214,24 +222,24 @@ index 0000000..c0ead11
 +	sdhci_w16(SDHCI_COMMAND, (24 << 8) | 0x3a); /* CMD24 */
 +
 +	/* Wait for Command Complete */
-+	uint64_t deadline = clock_get_uptime_nanoseconds() + CMD_TIMEOUT_NS;
++	uint64_t deadline = sdhci_deadline();
 +	while (!(sdhci_r16(SDHCI_INT_STATUS) & 1)) {
 +		if (sdhci_r16(SDHCI_ERR_INT_STATUS)) {
 +			return EIO;
 +		}
-+		if (clock_get_uptime_nanoseconds() > deadline) {
++		if (mach_absolute_time() > deadline) {
 +			return ETIMEDOUT;
 +		}
 +	}
 +	sdhci_w16(SDHCI_INT_STATUS, 1);
 +
 +	/* Wait for Buffer Write Ready (bit 4) */
-+	deadline = clock_get_uptime_nanoseconds() + CMD_TIMEOUT_NS;
++	deadline = sdhci_deadline();
 +	while (!(sdhci_r16(SDHCI_INT_STATUS) & 0x10)) {
 +		if (sdhci_r16(SDHCI_ERR_INT_STATUS)) {
 +			return EIO;
 +		}
-+		if (clock_get_uptime_nanoseconds() > deadline) {
++		if (mach_absolute_time() > deadline) {
 +			return ETIMEDOUT;
 +		}
 +	}
@@ -244,12 +252,12 @@ index 0000000..c0ead11
 +	}
 +
 +	/* Wait for Transfer Complete (bit 1) */
-+	deadline = clock_get_uptime_nanoseconds() + CMD_TIMEOUT_NS;
++	deadline = sdhci_deadline();
 +	while (!(sdhci_r16(SDHCI_INT_STATUS) & 2)) {
 +		if (sdhci_r16(SDHCI_ERR_INT_STATUS)) {
 +			return EIO;
 +		}
-+		if (clock_get_uptime_nanoseconds() > deadline) {
++		if (mach_absolute_time() > deadline) {
 +			return ETIMEDOUT;
 +		}
 +	}
