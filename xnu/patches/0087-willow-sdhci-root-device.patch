@@ -1,0 +1,599 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -105,6 +105,7 @@
+ 
+ bsd/dev/memdev.c			standard
+ bsd/dev/sweet_ufs.c			standard
++bsd/dev/willow_sdhci.c			standard
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -770,12 +770,17 @@
+ //
+ //	SWEET: root on a GPT partition of the internal UFS (bsd/dev/sweet_ufs.c)
+ //
+-	if (strcmp(rdBootVar, "ufsroot0") == 0) {
++	if (strcmp(rdBootVar, "sdhci0") == 0 || strcmp(rdBootVar, "ufsroot0") == 0) {
++		extern int willow_sdhci_rootdev(dev_t *dev);
+ 		extern int sweet_ufs_rootdev(dev_t *dev);
+ 		OSSafeReleaseNULL(matching);
+-		int ufs_error = sweet_ufs_rootdev(root);
+-		if (ufs_error) {
+-			panic("IOFindBSDRoot: SWEET UFS root %s unavailable: %d", rdBootVar, ufs_error);
++		int disk_error = willow_sdhci_rootdev(root);
++		if (disk_error) {
++			disk_error = sweet_ufs_rootdev(root);
++		}
++		if (disk_error) {
++			panic("IOFindBSDRoot: root %s unavailable: %d", rdBootVar, disk_error);
+ 		}
+ 		strlcpy(rootName, rdBootVar, rootNameSize);
+ 		IOLog("BSD root: %s, major %d, minor %d\n", rootName, major(*root), minor(*root));
+diff --git a/bsd/dev/willow_sdhci.c b/bsd/dev/willow_sdhci.c
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/willow_sdhci.c
+@@ -0,0 +1,559 @@
++/*
++ * WILLOW internal eMMC SDHCI root device.
++ *
++ * The Qualcomm SDCC/SDHCI v5 host (at 0x04744000) is left enabled and configured
++ * with the eMMC link active by the bootloader (ABL), which loaded our boot image.
++ * This driver reuses that hardware state: it issues polled PIO commands directly
++ * to read/write 512-byte sectors from the eMMC. It finds the named GPT partition
++ * (boot-arg sdhciroot=, default "userdata") and exposes it as BSD disk sdhci0
++ * (rsdhci0). Root on it with rd=sdhci0.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/buf.h>
++#include <sys/conf.h>
++#include <sys/disk.h>
++#include <sys/errno.h>
++#include <sys/proc.h>
++#include <sys/uio.h>
++#include <miscfs/devfs/devfs.h>
++#include <kern/locks.h>
++#include <kern/clock.h>
++#include <machine/machine_routines.h>
++#include <arm/caches_internal.h>
++#include <vm/pmap.h>
++#include <vm/vm_kern.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++#include <libkern/libkern.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++
++#define SDHCI_BLOCK_SIZE     0x04
++#define SDHCI_BLOCK_COUNT    0x06
++#define SDHCI_ARGUMENT       0x08
++#define SDHCI_TRANSFER_MODE  0x0C
++#define SDHCI_COMMAND        0x0E
++#define SDHCI_RESPONSE_0     0x10
++#define SDHCI_BUFFER         0x20
++#define SDHCI_PRESENT_STATE  0x24
++#define SDHCI_HOST_CONTROL   0x28
++#define SDHCI_POWER_CONTROL  0x29
++#define SDHCI_CLOCK_CONTROL  0x2C
++#define SDHCI_TIMEOUT_CONTROL 0x2E
++#define SDHCI_SOFTWARE_RESET 0x2F
++#define SDHCI_INT_STATUS     0x30
++#define SDHCI_ERR_INT_STATUS 0x32
++#define SDHCI_INT_ENABLE     0x34
++#define SDHCI_ERR_INT_ENABLE 0x36
++#define SDHCI_SIGNAL_ENABLE  0x38
++#define SDHCI_ERR_SIGNAL_ENABLE 0x3A
++
++#define EMMC_SECTOR_SIZE     512u
++#define CMD_TIMEOUT_NS       (2ull * NSEC_PER_SEC)
++
++static struct {
++	vm_offset_t regs;
++	vm_offset_t cq_regs;
++	uint64_t first_block, nblocks;          /* partition, in 512-byte blocks */
++	uint32_t secsize;                       /* logical sector size for BSD layer (512) */
++	bool writable;                          /* boot-arg sdhcirw=1 */
++	int bmajor, cmajor;
++	dev_t bdev;
++	bool ready;
++} ws;
++
++static LCK_GRP_DECLARE(willow_sdhci_grp, "willow_sdhci");
++static LCK_MTX_DECLARE(willow_sdhci_lock, &willow_sdhci_grp);
++
++static inline uint16_t
++sdhci_r16(uint32_t reg)
++{
++	return *(volatile uint16_t *)(ws.regs + reg);
++}
++
++static inline uint32_t
++sdhci_r32(uint32_t reg)
++{
++	return *(volatile uint32_t *)(ws.regs + reg);
++}
++
++static inline void
++sdhci_w16(uint32_t reg, uint16_t val)
++{
++	*(volatile uint16_t *)(ws.regs + reg) = val;
++}
++
++static inline void
++sdhci_w32(uint32_t reg, uint32_t val)
++{
++	*(volatile uint32_t *)(ws.regs + reg) = val;
++}
++
++static int
++sdhci_wait_cmd_ready(void)
++{
++	uint64_t deadline = clock_get_uptime_nanoseconds() + CMD_TIMEOUT_NS;
++	while (sdhci_r32(SDHCI_PRESENT_STATE) & 1) {
++		if (clock_get_uptime_nanoseconds() > deadline) {
++			return ETIMEDOUT;
++		}
++	}
++	return 0;
++}
++
++static int
++sdhci_wait_data_ready(void)
++{
++	uint64_t deadline = clock_get_uptime_nanoseconds() + CMD_TIMEOUT_NS;
++	while (sdhci_r32(SDHCI_PRESENT_STATE) & 2) {
++		if (clock_get_uptime_nanoseconds() > deadline) {
++			return ETIMEDOUT;
++		}
++	}
++	return 0;
++}
++
++static int
++sdhci_read_sector(uint32_t lba, void *dst)
++{
++	int err = sdhci_wait_cmd_ready();
++	if (err) return err;
++	err = sdhci_wait_data_ready();
++	if (err) return err;
++
++	sdhci_w16(SDHCI_INT_STATUS, 0xffff);
++	sdhci_w16(SDHCI_ERR_INT_STATUS, 0xffff);
++
++	sdhci_w16(SDHCI_BLOCK_SIZE, EMMC_SECTOR_SIZE);
++	sdhci_w16(SDHCI_BLOCK_COUNT, 1);
++	sdhci_w32(SDHCI_ARGUMENT, lba);
++	sdhci_w16(SDHCI_TRANSFER_MODE, 0x0012); /* Read, single block, block count enable */
++	sdhci_w16(SDHCI_COMMAND, (17 << 8) | 0x3a); /* CMD17 */
++
++	/* Wait for Command Complete (bit 0) */
++	uint64_t deadline = clock_get_uptime_nanoseconds() + CMD_TIMEOUT_NS;
++	while (!(sdhci_r16(SDHCI_INT_STATUS) & 1)) {
++		if (sdhci_r16(SDHCI_ERR_INT_STATUS)) {
++			return EIO;
++		}
++		if (clock_get_uptime_nanoseconds() > deadline) {
++			return ETIMEDOUT;
++		}
++	}
++	sdhci_w16(SDHCI_INT_STATUS, 1);
++
++	/* Wait for Buffer Read Ready (bit 5) */
++	deadline = clock_get_uptime_nanoseconds() + CMD_TIMEOUT_NS;
++	while (!(sdhci_r16(SDHCI_INT_STATUS) & 0x20)) {
++		if (sdhci_r16(SDHCI_ERR_INT_STATUS)) {
++			return EIO;
++		}
++		if (clock_get_uptime_nanoseconds() > deadline) {
++			return ETIMEDOUT;
++		}
++	}
++	sdhci_w16(SDHCI_INT_STATUS, 0x20);
++
++	/* Read 512 bytes */
++	uint32_t *p = (uint32_t *)dst;
++	for (int i = 0; i < 128; i++) {
++		p[i] = sdhci_r32(SDHCI_BUFFER);
++	}
++
++	/* Wait for Transfer Complete (bit 1) */
++	deadline = clock_get_uptime_nanoseconds() + CMD_TIMEOUT_NS;
++	while (!(sdhci_r16(SDHCI_INT_STATUS) & 2)) {
++		if (sdhci_r16(SDHCI_ERR_INT_STATUS)) {
++			return EIO;
++		}
++		if (clock_get_uptime_nanoseconds() > deadline) {
++			return ETIMEDOUT;
++		}
++	}
++	sdhci_w16(SDHCI_INT_STATUS, 2);
++	return 0;
++}
++
++static int
++sdhci_write_sector(uint32_t lba, const void *src)
++{
++	if (!ws.writable) return EROFS;
++
++	int err = sdhci_wait_cmd_ready();
++	if (err) return err;
++	err = sdhci_wait_data_ready();
++	if (err) return err;
++
++	sdhci_w16(SDHCI_INT_STATUS, 0xffff);
++	sdhci_w16(SDHCI_ERR_INT_STATUS, 0xffff);
++
++	sdhci_w16(SDHCI_BLOCK_SIZE, EMMC_SECTOR_SIZE);
++	sdhci_w16(SDHCI_BLOCK_COUNT, 1);
++	sdhci_w32(SDHCI_ARGUMENT, lba);
++	sdhci_w16(SDHCI_TRANSFER_MODE, 0x0002); /* Write, single block, block count enable */
++	sdhci_w16(SDHCI_COMMAND, (24 << 8) | 0x3a); /* CMD24 */
++
++	/* Wait for Command Complete */
++	uint64_t deadline = clock_get_uptime_nanoseconds() + CMD_TIMEOUT_NS;
++	while (!(sdhci_r16(SDHCI_INT_STATUS) & 1)) {
++		if (sdhci_r16(SDHCI_ERR_INT_STATUS)) {
++			return EIO;
++		}
++		if (clock_get_uptime_nanoseconds() > deadline) {
++			return ETIMEDOUT;
++		}
++	}
++	sdhci_w16(SDHCI_INT_STATUS, 1);
++
++	/* Wait for Buffer Write Ready (bit 4) */
++	deadline = clock_get_uptime_nanoseconds() + CMD_TIMEOUT_NS;
++	while (!(sdhci_r16(SDHCI_INT_STATUS) & 0x10)) {
++		if (sdhci_r16(SDHCI_ERR_INT_STATUS)) {
++			return EIO;
++		}
++		if (clock_get_uptime_nanoseconds() > deadline) {
++			return ETIMEDOUT;
++		}
++	}
++	sdhci_w16(SDHCI_INT_STATUS, 0x10);
++
++	/* Write 512 bytes */
++	const uint32_t *p = (const uint32_t *)src;
++	for (int i = 0; i < 128; i++) {
++		sdhci_w32(SDHCI_BUFFER, p[i]);
++	}
++
++	/* Wait for Transfer Complete (bit 1) */
++	deadline = clock_get_uptime_nanoseconds() + CMD_TIMEOUT_NS;
++	while (!(sdhci_r16(SDHCI_INT_STATUS) & 2)) {
++		if (sdhci_r16(SDHCI_ERR_INT_STATUS)) {
++			return EIO;
++		}
++		if (clock_get_uptime_nanoseconds() > deadline) {
++			return ETIMEDOUT;
++		}
++	}
++	sdhci_w16(SDHCI_INT_STATUS, 2);
++	return 0;
++}
++
++static int
++sdhci_find_partition(const char *want)
++{
++	static uint8_t sec[EMMC_SECTOR_SIZE];
++	int error = sdhci_read_sector(1, sec);
++	if (error) {
++		printf("WILLOW SDHCI: failed to read LBA 1: %d\n", error);
++		return error;
++	}
++	if (memcmp(sec, "EFI PART", 8) != 0) {
++		printf("WILLOW SDHCI: eMMC has no GPT (signature mismatch)\n");
++		return ENXIO;
++	}
++
++	uint64_t entry_lba;
++	uint32_t nent, esz;
++	memcpy(&entry_lba, sec + 72, 8);
++	memcpy(&nent, sec + 80, 4);
++	memcpy(&esz, sec + 84, 4);
++
++	if (esz != 128 || nent == 0) {
++		printf("WILLOW SDHCI: unsupported GPT entries %u x %u\n", nent, esz);
++		return ENXIO;
++	}
++
++	uint32_t entries_per_sector = EMMC_SECTOR_SIZE / esz; /* 4 */
++	for (uint32_t idx = 0; idx < nent; idx++) {
++		if ((idx % entries_per_sector) == 0) {
++			error = sdhci_read_sector((uint32_t)entry_lba + (idx / entries_per_sector), sec);
++			if (error) {
++				return error;
++			}
++		}
++		const uint8_t *e = sec + (idx % entries_per_sector) * esz;
++		char name[37];
++		unsigned c;
++		for (c = 0; c < 36; c++) {
++			uint16_t ch = (uint16_t)(e[56 + 2 * c] | (e[57 + 2 * c] << 8));
++			if (ch == 0 || ch > 0x7f) break;
++			name[c] = (char)ch;
++		}
++		name[c] = 0;
++		if (strcmp(name, want) == 0) {
++			uint64_t first, last;
++			memcpy(&first, e + 32, 8);
++			memcpy(&last, e + 40, 8);
++			if (last < first) return ENXIO;
++			ws.first_block = first;
++			ws.nblocks = last - first + 1;
++			printf("WILLOW SDHCI: found \"%s\" at LBA 0x%llx (size %llu MiB)\n",
++			       want, ws.first_block, (ws.nblocks * EMMC_SECTOR_SIZE) >> 20);
++			return 0;
++		}
++	}
++
++	printf("WILLOW SDHCI: no GPT partition named \"%s\"\n", want);
++	return ENOENT;
++}
++
++static int
++willow_sdhci_open(__unused dev_t dev, int flags, __unused int devtype, __unused struct proc *p)
++{
++	if (!ws.ready) {
++		return ENXIO;
++	}
++	return ((flags & FWRITE) && !ws.writable) ? EROFS : 0;
++}
++
++static int
++willow_sdhci_close(__unused dev_t dev, __unused int flags, __unused int devtype, __unused struct proc *p)
++{
++	return 0;
++}
++
++static void
++willow_sdhci_strategy(buf_t bp)
++{
++	int error = 0;
++	caddr_t vaddr = NULL;
++	uint64_t off = (uint64_t)buf_blkno(bp) * ws.secsize;
++	uint32_t count = buf_count(bp);
++	uint64_t part_bytes = ws.nblocks * EMMC_SECTOR_SIZE;
++	bool rd = buf_flags(bp) & B_READ;
++
++	buf_setresid(bp, count);
++	if (!rd && !ws.writable) {
++		error = EROFS;
++		goto done;
++	}
++	if (off > part_bytes || count > part_bytes - off) {
++		error = EINVAL;
++		goto done;
++	}
++	if (count == 0) {
++		goto done;
++	}
++	if (buf_map(bp, &vaddr)) {
++		error = EIO;
++		goto done;
++	}
++
++	lck_mtx_lock(&willow_sdhci_lock);
++	uint32_t sectors = count / EMMC_SECTOR_SIZE;
++	uint64_t start_sec = off / EMMC_SECTOR_SIZE;
++
++	for (uint32_t s = 0; s < sectors; s++) {
++		if (rd) {
++			error = sdhci_read_sector((uint32_t)(ws.first_block + start_sec + s),
++			                          (char *)vaddr + s * EMMC_SECTOR_SIZE);
++		} else {
++			error = sdhci_write_sector((uint32_t)(ws.first_block + start_sec + s),
++			                           (const char *)vaddr + s * EMMC_SECTOR_SIZE);
++		}
++		if (error) {
++			break;
++		}
++		buf_setresid(bp, count - (s + 1) * EMMC_SECTOR_SIZE);
++	}
++	lck_mtx_unlock(&willow_sdhci_lock);
++	buf_unmap(bp);
++
++done:
++	if (error) {
++		buf_seterror(bp, error);
++	}
++	buf_biodone(bp);
++}
++
++static int
++willow_sdhci_ioctl(__unused dev_t dev, u_long cmd, caddr_t data, __unused int flag,
++    __unused struct proc *p, int is_char)
++{
++	uint32_t *f = (uint32_t *)data;
++	uint64_t *o = (uint64_t *)data;
++
++	switch (cmd) {
++	case DKIOCGETBLOCKSIZE:
++		*f = ws.secsize;
++		return 0;
++	case DKIOCSETBLOCKSIZE:
++		if (is_char) {
++			return ENODEV;
++		}
++		if (*f != EMMC_SECTOR_SIZE) {
++			return EINVAL;
++		}
++		ws.secsize = *f;
++		return 0;
++	case DKIOCGETPHYSICALBLOCKSIZE:
++		*f = EMMC_SECTOR_SIZE;
++		return 0;
++	case DKIOCGETBLOCKCOUNT:
++		*o = ws.nblocks;
++		return 0;
++	case DKIOCISWRITABLE:
++		*f = ws.writable;
++		return 0;
++	case DKIOCSYNCHRONIZE:
++	case DKIOCSYNCHRONIZECACHE:
++		return 0;
++	case DKIOCGETMAXBLOCKCOUNTREAD:
++	case DKIOCGETMAXBLOCKCOUNTWRITE:
++		*o = 2048; /* 1 MiB */
++		return 0;
++	case DKIOCGETMAXSEGMENTCOUNTREAD:
++	case DKIOCGETMAXSEGMENTCOUNTWRITE:
++		*o = 1;
++		return 0;
++	default:
++		return ENOTTY;
++	}
++}
++
++static int
++willow_sdhci_bioctl(dev_t dev, u_long cmd, caddr_t data, int flag, struct proc *p)
++{
++	return willow_sdhci_ioctl(dev, cmd, data, flag, p, 0);
++}
++
++static int
++willow_sdhci_cioctl(dev_t dev, u_long cmd, caddr_t data, int flag, struct proc *p)
++{
++	return willow_sdhci_ioctl(dev, cmd, data, flag, p, 1);
++}
++
++static int
++willow_sdhci_psize(__unused dev_t dev)
++{
++	return ws.ready ? (int)MIN(ws.nblocks, INT_MAX) : -1;
++}
++
++static int
++willow_sdhci_read(dev_t dev, struct uio *uio, __unused int ioflag)
++{
++	return physio(willow_sdhci_strategy, NULL, dev, B_READ, minphys, uio, (int)ws.secsize);
++}
++
++static int
++willow_sdhci_write(dev_t dev, struct uio *uio, __unused int ioflag)
++{
++	if (!ws.writable) {
++		return EROFS;
++	}
++	return physio(willow_sdhci_strategy, NULL, dev, B_WRITE, minphys, uio, (int)ws.secsize);
++}
++
++static const struct bdevsw willow_sdhci_bdevsw = {
++	.d_open     = willow_sdhci_open,
++	.d_close    = willow_sdhci_close,
++	.d_strategy = willow_sdhci_strategy,
++	.d_ioctl    = willow_sdhci_bioctl,
++	.d_dump     = eno_dump,
++	.d_psize    = willow_sdhci_psize,
++	.d_type     = D_DISK,
++};
++
++static const struct cdevsw willow_sdhci_cdevsw = {
++	.d_open       = willow_sdhci_open,
++	.d_close      = willow_sdhci_close,
++	.d_read       = willow_sdhci_read,
++	.d_write      = willow_sdhci_write,
++	.d_ioctl      = willow_sdhci_cioctl,
++	.d_stop       = eno_stop,
++	.d_reset      = eno_reset,
++	.d_ttys       = NULL,
++	.d_select     = eno_select,
++	.d_mmap       = eno_mmap,
++	.d_strategy   = eno_strat,
++	.d_reserved_1 = eno_getc,
++	.d_reserved_2 = eno_putc,
++	.d_type       = D_DISK,
++};
++
++static int
++willow_sdhci_init(void)
++{
++	DTEntry node;
++	uintptr_t const *reg = NULL;
++	unsigned int size = 0;
++	char want[64] = "userdata";
++	uint32_t rw = 1;
++	int error;
++
++	if (SecureDTLookupEntry(NULL, "/willow-sdhci", &node) != kSuccess ||
++	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
++	    size < 2 * sizeof(uintptr_t)) {
++		printf("WILLOW SDHCI: no /willow-sdhci node in device tree\n");
++		return ENXIO;
++	}
++
++	PE_parse_boot_argn("sdhciroot", want, sizeof(want));
++	PE_parse_boot_argn("sdhcirw", &rw, sizeof(rw));
++	PE_parse_boot_argn("rootrw", &rw, sizeof(rw));
++
++	ws.regs = ml_io_map(reg[0], reg[1]);
++	if (!ws.regs) {
++		printf("WILLOW SDHCI: ml_io_map failed for 0x%lx\n", reg[0]);
++		return ENOMEM;
++	}
++
++	/* Disable CQE if active at 0x04745000 */
++	ws.cq_regs = ml_io_map(0x04745000UL, 0x1000);
++	if (ws.cq_regs) {
++		volatile uint32_t *cq = (volatile uint32_t *)ws.cq_regs;
++		if (cq[1] & (1 << 12)) {
++			cq[1] &= ~(1 << 12);
++		}
++	}
++
++	/* Enable normal/error interrupt status */
++	sdhci_w16(SDHCI_INT_ENABLE, 0xffff);
++	sdhci_w16(SDHCI_ERR_INT_ENABLE, 0xffff);
++
++	ws.secsize = EMMC_SECTOR_SIZE;
++	ws.writable = (rw != 0);
++
++	lck_mtx_lock(&willow_sdhci_lock);
++	error = sdhci_find_partition(want);
++	lck_mtx_unlock(&willow_sdhci_lock);
++	if (error) {
++		return error;
++	}
++
++	ws.bmajor = bdevsw_add(-1, &willow_sdhci_bdevsw);
++	if (ws.bmajor < 0) {
++		return ENXIO;
++	}
++	ws.cmajor = cdevsw_add_with_bdev(-1, &willow_sdhci_cdevsw, ws.bmajor);
++	if (ws.cmajor < 0) {
++		return ENXIO;
++	}
++	ws.bdev = makedev(ws.bmajor, 0);
++	devfs_make_node(ws.bdev, DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640, "sdhci0");
++	devfs_make_node(makedev(ws.cmajor, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "rsdhci0");
++	ws.ready = true;
++
++	printf("WILLOW SDHCI: \"%s\" ready (major %d, %llu MiB, %s)\n",
++	       want, ws.bmajor, (ws.nblocks * EMMC_SECTOR_SIZE) >> 20,
++	       ws.writable ? "read-write" : "read-only");
++	return 0;
++}
++
++/* Root device for rd=sdhci0 (IOFindBSDRoot). */
++int willow_sdhci_rootdev(dev_t *dev);
++
++int
++willow_sdhci_rootdev(dev_t *dev)
++{
++	if (!ws.ready) {
++		int error = willow_sdhci_init();
++		if (error) {
++			return error;
++		}
++	}
++	*dev = ws.bdev;
++	return 0;
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
