@@ -116,7 +116,7 @@ index ccbb188..777aca4 100644
  	// Set low reset vector before attempting any loads
  	adrp	x0, EXT(LowExceptionVectorBase)@page
  	add		x0, x0, EXT(LowExceptionVectorBase)@pageoff
-@@ -609,6 +628,23 @@ Lkernelcache_base_found:
+@@ -609,6 +628,36 @@ Lkernelcache_base_found:
  	lsr		x5,  x24, #(ARM_TT_L2_SHIFT)
  	create_bootstrap_mapping x14, x15, x5, x3, x2, x9, x10, x11, x12, x13
  
@@ -133,8 +133,21 @@ index ccbb188..777aca4 100644
 +	orr		x11, x11, x10
 +	str		x11, [x3, #(1 * 8)]
 +	str		x11, [x25, #(1 * 8)]
-+	nop
-+	nop
++	/* Stage 0.5: Green 64x32 box at x=80..144 indicating bootstrap tables mapped */
++	MOV64	x0, (0x5c000000 + 2300 * 4320 + 80 * 4)
++	MOV64	w1, 0x00ff00
++	mov		x2, #32
++	mov		x4, #4320
++Lwillow_green_row:
++	mov		x5, #64
++	mov		x6, x0
++Lwillow_green_pix:
++	str		w1, [x6], #4
++	subs	x5, x5, #1
++	b.ne	Lwillow_green_pix
++	add		x0, x0, x4
++	subs	x2, x2, #1
++	b.ne	Lwillow_green_row
 +#endif
 +
  	/* Ensure TTEs are visible */
@@ -160,7 +173,7 @@ index 0000000..8f4c808
 +
 +#define EARLY_FB ((volatile uint32_t *)(uintptr_t)0x5c000000)
 +#define EARLY_WIDTH 1080u
-+#define EARLY_HEIGHT 2400u
++#define EARLY_HEIGHT 2340u
 +#define EARLY_STRIDE (4320u / 4)
 +#define EARLY_SCALE 2u
 +#define EARLY_CELL_W (8u * EARLY_SCALE)
@@ -239,7 +252,7 @@ index 0000000..8f4c808
 +		return;
 +	}
 +	uint32_t color = 0xff00ff00u | (stage * 28u << 16);
-+	for (unsigned int y = EARLY_HEIGHT - 32; y < EARLY_HEIGHT; y++) {
++	for (unsigned int y = 2300 - 32; y < 2300; y++) {
 +		for (unsigned int x = stage * 64; x < (stage + 1) * 64; x++) {
 +			EARLY_FB[y * EARLY_STRIDE + x] = color;
 +		}
