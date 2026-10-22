@@ -56,7 +56,7 @@ jobs:
 
       - name: Apply Bring-Up Tweaks
         run: |
-          mkdir -p /mnt/iosroot
+          sudo mkdir -p /mnt/iosroot
           sudo mount -t hfsplus -o loop,force ios16-root.img /mnt/iosroot
           sudo python3 tools/sweet-root-tweaks.py /mnt/iosroot
           sudo umount /mnt/iosroot
