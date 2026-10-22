@@ -234,7 +234,7 @@ new file mode 100644
 index 0000000..a044ad0
 --- /dev/null
 +++ b/pexpert/pexpert/arm64/SWEET.h
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,74 @@
 +/*
 + * Board config for the Redmi Note 10 Pro ("sweet", Qualcomm SM7150 /
 + * Snapdragon 732G): Kryo 470 = Cortex-A76 + Cortex-A55, ARMv8.2, no PAC.
@@ -262,7 +262,6 @@ index 0000000..a044ad0
 +#define __ARM_DEBUG__             7
 +#define __ARM_ENABLE_SWAP__       1
 +#define __ARM_V8_CRYPTO_EXTENSIONS__ 1
-+#define __ARM_PAN_AVAILABLE__     1
 +#define __ARM_4K_PG__             1
 +
 +#define HAS_GIC_V3                1
