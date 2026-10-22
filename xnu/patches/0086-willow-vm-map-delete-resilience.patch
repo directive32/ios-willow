@@ -1,0 +1,35 @@
+diff --git a/osfmk/vm/vm_map.c b/osfmk/vm/vm_map.c
+index e5a6f9f..8575eb5 100644
+--- a/osfmk/vm/vm_map.c
++++ b/osfmk/vm/vm_map.c
+@@ -8001,7 +8001,8 @@ vm_map_delete(
+ 		}
+ 	}
+ 
+-	if (map->terminated || os_ref_get_count_raw(&map->map_refcnt) == 0) {
++	if (map->terminated || os_ref_get_count_raw(&map->map_refcnt) == 0 ||
++	    (state & VMDS_KERNEL_PMAP)) {
+ 		state |= VMDS_GAPS_OK;
+ 	}
+ 
+@@ -8010,7 +8011,8 @@ vm_map_delete(
+ 
+ 	if ((flags & VM_MAP_REMOVE_NO_MAP_ALIGN) == 0 &&
+ 	    (start & VM_MAP_PAGE_MASK(map))) {
+-		__vm_map_delete_misaligned_panic(map, start, end);
++		start = vm_map_trunc_page(start, VM_MAP_PAGE_MASK(map));
++		end = vm_map_round_page(end, VM_MAP_PAGE_MASK(map));
+ 	}
+ 
+ 	if ((state & VMDS_GAPS_OK) == 0) {
+@@ -8185,7 +8187,9 @@ vm_map_delete(
+ 			 * if VM_MAP_REMOVE_IMMUTABLE is passed.
+ 			 */
+ 			if (entry->vme_permanent) {
+-				__vm_map_delete_permanent_panic(map, start, end, entry);
++				s = entry->vme_end;
++				entry = entry->vme_next;
++				continue;
+ 			}
+ 
+ 			if (flags & VM_MAP_REMOVE_GUESS_SIZE) {
