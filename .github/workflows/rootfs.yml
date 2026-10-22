@@ -17,8 +17,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
+            linux-modules-extra-$(uname -r) \
             build-essential cmake git libfuse3-dev zlib1g-dev \
             bzip2 libbz2-dev libattr1-dev hfsprogs android-sdk-libsparse-utils zstd rsync curl unzip
+          sudo modprobe hfsplus
+          lsmod | grep hfsplus
 
       - name: Build and install apfs-fuse
         run: |
