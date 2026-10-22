@@ -24,8 +24,8 @@ jobs:
         run: |
           git clone --recurse-submodules https://github.com/sgan81/apfs-fuse.git
           cd apfs-fuse
-          # Ensure <cstdint> is included in all header files
-          find . -name "*.h" -exec sed -i '1i #include <cstdint>' {} +
+          # Fix missing stdint.h in PList.h
+          sed -i '1i #include <stdint.h>' ApfsLib/PList.h
           mkdir build && cd build
           cmake ..
           make -j$(nproc)
